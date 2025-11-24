@@ -51,6 +51,9 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
 
 // --- Main App ---
 
+type SortField = 'license_key' | 'status' | 'hwid' | 'expires_at';
+type SortDirection = 'asc' | 'desc';
+
 export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [licenses, setLicenses] = useState<License[]>([]);
@@ -62,6 +65,12 @@ export default function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'expired' | 'expiring'>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [sortConfig, setSortConfig] = useState<{ field: SortField, direction: SortDirection }>({
+    field: 'expires_at',
+    direction: 'asc'
+  });
 
   // Initial Load
   useEffect(() => {
@@ -221,6 +230,10 @@ export default function App() {
   };
 
   // Filter & Stats
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, filterStatus, pageSize]);
+
   const filteredLicenses = useMemo(() => {
     return licenses.filter(l => {
       // 1. Search Filter
@@ -247,6 +260,70 @@ export default function App() {
       }
     });
   }, [licenses, searchTerm, filterStatus]);
+
+  const getLicenseStatus = (license: License) => {
+    const now = new Date();
+    const expiryDate = new Date(license.expires_at);
+    const isExpired = expiryDate < now;
+
+    const msPerDay = 1000 * 60 * 60 * 24;
+    const diffTime = expiryDate.getTime() - now.getTime();
+    const diffDays = diffTime / msPerDay;
+    const isExpiringSoon = !isExpired && diffDays <= 7;
+
+    if (isExpired) return 'expired';
+    if (isExpiringSoon) return 'expiring';
+    if (license.hwid) return 'active';
+    return 'available';
+  };
+
+  const sortedLicenses = useMemo(() => {
+    const sorted = [...filteredLicenses];
+    sorted.sort((a, b) => {
+      const dirMultiplier = sortConfig.direction === 'asc' ? 1 : -1;
+      
+      switch (sortConfig.field) {
+        case 'license_key':
+          return a.license_key.localeCompare(b.license_key) * dirMultiplier;
+        case 'hwid':
+          return (a.hwid || '').localeCompare(b.hwid || '') * dirMultiplier;
+        case 'status': {
+          const order = ['available', 'active', 'expiring', 'expired'];
+          const diff = order.indexOf(getLicenseStatus(a)) - order.indexOf(getLicenseStatus(b));
+          return diff * dirMultiplier;
+        }
+        case 'expires_at':
+        default:
+          return (new Date(a.expires_at).getTime() - new Date(b.expires_at).getTime()) * dirMultiplier;
+      }
+    });
+    return sorted;
+  }, [filteredLicenses, sortConfig]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedLicenses.length / pageSize));
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [totalPages, currentPage]);
+
+  const paginatedLicenses = useMemo(() => {
+    const startIdx = (currentPage - 1) * pageSize;
+    return sortedLicenses.slice(startIdx, startIdx + pageSize);
+  }, [sortedLicenses, currentPage, pageSize]);
+
+  const handleSort = (field: SortField) => {
+    setSortConfig(prev => {
+      if (prev.field === field) {
+        return {
+          field,
+          direction: prev.direction === 'asc' ? 'desc' : 'asc'
+        };
+      }
+      return { field, direction: 'asc' };
+    });
+  };
 
   const stats = useMemo(() => {
     const now = new Date();
@@ -381,15 +458,43 @@ export default function App() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-slate-950/50 border-b border-slate-800 text-xs uppercase text-slate-500 font-semibold">
-                    <th className="p-4">Mã License</th>
-                    <th className="p-4">Trạng thái</th>
-                    <th className="p-4">ID Phần cứng (HWID)</th>
-                    <th className="p-4">Hết hạn lúc</th>
+                    <th className="p-4 cursor-pointer select-none" onClick={() => handleSort('license_key')}>
+                      <div className="flex items-center gap-2">
+                        Mã License
+                        {sortConfig.field === 'license_key' && (
+                          <span>{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="p-4 cursor-pointer select-none" onClick={() => handleSort('status')}>
+                      <div className="flex items-center gap-2">
+                        Trạng thái
+                        {sortConfig.field === 'status' && (
+                          <span>{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="p-4 cursor-pointer select-none" onClick={() => handleSort('hwid')}>
+                      <div className="flex items-center gap-2">
+                        ID Phần cứng (HWID)
+                        {sortConfig.field === 'hwid' && (
+                          <span>{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+                        )}
+                      </div>
+                    </th>
+                    <th className="p-4 cursor-pointer select-none" onClick={() => handleSort('expires_at')}>
+                      <div className="flex items-center gap-2">
+                        Hết hạn lúc
+                        {sortConfig.field === 'expires_at' && (
+                          <span>{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
+                        )}
+                      </div>
+                    </th>
                     <th className="p-4 text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {filteredLicenses.length === 0 ? (
+                  {paginatedLicenses.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="p-8 text-center text-slate-500">
                         {isConnected ? (
@@ -400,7 +505,7 @@ export default function App() {
                       </td>
                     </tr>
                   ) : (
-                    filteredLicenses.map((license) => {
+                    paginatedLicenses.map((license) => {
                       const now = new Date();
                       const expiryDate = new Date(license.expires_at);
                       const isExpired = expiryDate < now;
@@ -466,6 +571,42 @@ export default function App() {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          {/* Pagination */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 text-sm text-slate-400">
+            <div className="flex items-center gap-2">
+              <span>Hiển thị</span>
+              <select
+                value={pageSize}
+                onChange={e => setPageSize(Number(e.target.value))}
+                className="bg-slate-900 border border-slate-800 rounded px-2 py-1 focus:border-blue-500 outline-none"
+              >
+                {[10, 25, 50].map(size => (
+                  <option key={size} value={size}>{size}/trang</option>
+                ))}
+              </select>
+              <span>• {sortedLicenses.length} kết quả</span>
+            </div>
+            <div className="flex items-center gap-2 self-end md:self-auto">
+              <button
+                onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1 rounded border border-slate-800 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-blue-500 hover:text-white transition-colors"
+              >
+                Trước
+              </button>
+              <span className="text-slate-500">
+                Trang {currentPage}/{totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1 rounded border border-slate-800 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:border-blue-500 hover:text-white transition-colors"
+              >
+                Sau
+              </button>
             </div>
           </div>
         </div>
