@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import type { User } from '@supabase/supabase-js';
 import { 
   Key, 
   ShieldAlert, 
@@ -71,6 +72,24 @@ export default function App() {
     field: 'expires_at',
     direction: 'asc'
   });
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+
+  const adminEmails = useMemo(() => {
+    const raw = import.meta.env.VITE_ADMIN_EMAILS || '';
+    return raw
+      .split(',')
+      .map(email => email.trim().toLowerCase())
+      .filter(Boolean);
+  }, []);
+
+  const isAuthorized = useMemo(() => {
+    if (!user?.email) return false;
+    if (adminEmails.length === 0) return true;
+    return adminEmails.includes(user.email.toLowerCase());
+  }, [user, adminEmails]);
 
   // Initial Load
   useEffect(() => {
@@ -118,14 +137,44 @@ export default function App() {
     initConnection();
   }, []);
 
-  // Fetch data when connected
+  // Fetch data when connected and authorized
   useEffect(() => {
-    if (isConnected) {
+    if (isConnected && isAuthorized) {
       fetchLicenses();
     }
+  }, [isConnected, isAuthorized]);
+
+  // Auth listener
+  useEffect(() => {
+    if (!isConnected) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    let mounted = true;
+
+    const initSession = async () => {
+      const { data } = await client.auth.getSession();
+      if (mounted) {
+        setUser(data.session?.user ?? null);
+      }
+    };
+
+    initSession();
+
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [isConnected]);
 
   const fetchLicenses = async () => {
+    if (!isAuthorized) return;
     const client = getSupabaseClient();
     if (!client) return;
 
@@ -173,6 +222,7 @@ export default function App() {
   };
 
   const handleResetHWID = async (key: string) => {
+    if (!isAuthorized) return;
     const client = getSupabaseClient();
     if (!client) return;
     if (!confirm('Bạn có chắc chắn muốn mở khóa license này? Người dùng sẽ có thể liên kết với máy mới.')) return;
@@ -191,6 +241,7 @@ export default function App() {
   };
 
   const handleDelete = async (key: string) => {
+    if (!isAuthorized) return;
     const client = getSupabaseClient();
     if (!client) return;
     if (!confirm('Hành động này không thể hoàn tác. Xóa license?')) return;
@@ -325,6 +376,43 @@ export default function App() {
     });
   };
 
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const client = getSupabaseClient();
+    if (!client) return;
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const email = loginForm.email.trim().toLowerCase();
+      const { error: signInError, data } = await client.auth.signInWithPassword({
+        email,
+        password: loginForm.password,
+      });
+      if (signInError) {
+        setAuthError(signInError.message);
+        return;
+      }
+      const signedInEmail = data.user?.email?.toLowerCase();
+      if (signedInEmail && adminEmails.length > 0 && !adminEmails.includes(signedInEmail)) {
+        setAuthError('Tài khoản không có quyền truy cập.');
+        await client.auth.signOut();
+      } else {
+        setLoginForm(prev => ({ ...prev, password: '' }));
+      }
+    } catch (err: any) {
+      setAuthError(err.message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    const client = getSupabaseClient();
+    if (!client) return;
+    await client.auth.signOut();
+    setLoginForm({ email: '', password: '' });
+  };
+
   const stats = useMemo(() => {
     const now = new Date();
     return {
@@ -352,6 +440,17 @@ export default function App() {
                <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]' : 'bg-slate-500'}`} />
                <span className="text-xs text-slate-400 font-medium hidden sm:inline">{isConnected ? 'Đã kết nối' : 'Ngoại tuyến'}</span>
             </div>
+            {user && (
+              <div className="flex items-center gap-2 bg-slate-800/50 border border-slate-800 rounded-full px-3 py-1.5 text-xs text-slate-300">
+                <span>{user.email}</span>
+                <button
+                  onClick={handleLogout}
+                  className="text-rose-400 hover:text-rose-200 transition-colors font-medium"
+                >
+                  Đăng xuất
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -383,6 +482,70 @@ export default function App() {
             </div>
           )}
 
+          {isConnected && !user && (
+            <div className="bg-slate-900 border border-slate-800 p-6 rounded-lg max-w-xl">
+              <h3 className="text-lg font-semibold text-white mb-2">Đăng nhập quản trị</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Chỉ thành viên trong danh sách quản trị mới có quyền truy cập dashboard.
+              </p>
+              <form onSubmit={handleLogin} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Email</label>
+                  <input
+                    type="email"
+                    value={loginForm.email}
+                    onChange={e => setLoginForm(prev => ({ ...prev, email: e.target.value }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-blue-500 outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Mật khẩu</label>
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded p-2 text-white text-sm focus:border-blue-500 outline-none"
+                    required
+                  />
+                </div>
+                {authError && (
+                  <p className="text-xs text-red-400">{authError}</p>
+                )}
+                <button
+                  type="submit"
+                  disabled={authLoading}
+                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-2 rounded transition-colors"
+                >
+                  {authLoading ? 'Đang xử lý...' : 'Đăng nhập'}
+                </button>
+              </form>
+              {adminEmails.length > 0 && (
+                <p className="text-xs text-slate-500 mt-4">
+                  Email được phép: {adminEmails.join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+
+          {isConnected && user && !isAuthorized && (
+            <div className="bg-red-900/10 border border-red-500/20 p-4 rounded-lg">
+              <p className="text-sm text-red-200 font-medium">
+                Tài khoản {user.email} không nằm trong danh sách quản trị. Vui lòng liên hệ quản trị viên.
+              </p>
+            </div>
+          )}
+
+          {(!isConnected || !user || !isAuthorized) && (
+            <div className="text-center text-slate-500 text-sm">
+              {!isConnected ? 'Đang chờ kết nối...' : !user ? 'Vui lòng đăng nhập để tiếp tục.' : 'Bạn không có quyền xem nội dung này.'}
+            </div>
+          )}
+
+          {(!isConnected || !user || !isAuthorized) && <div className="h-10" />}
+
+          {isConnected && user && isAuthorized && (
+          <>
           {/* Stats Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-lg">
@@ -609,6 +772,8 @@ export default function App() {
               </button>
             </div>
           </div>
+          </>
+          )}
         </div>
 
       </main>
