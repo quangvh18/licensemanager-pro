@@ -1,0 +1,5 @@
+{
+  "name": "LicenseManager Pro",
+  "description": "A dashboard to manage software licenses via Supabase. Create keys, set expiration dates, and reset hardware locks.",
+  "requestFramePermissions": []
+}
